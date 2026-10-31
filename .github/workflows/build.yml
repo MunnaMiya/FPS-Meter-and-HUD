@@ -39,7 +39,7 @@ jobs:
         with:
           gradle-version: '9.3.1'
 
-      - name: Decode Signing Keystore
+      - name: Decode Signing Keystore (With Fallback Paths)
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
         run: |
@@ -48,6 +48,9 @@ jobs:
             exit 1
           fi
           echo "$KEYSTORE_BASE64" | tr -d '[:space:]' | base64 --decode > app/release.keystore
+          cp app/release.keystore ./release.keystore
+          cp app/release.keystore ./my-upload-key.jks
+          cp app/release.keystore app/my-upload-key.jks
 
       - name: Build Signed Release APK & AAB (API 29 to 37)
         env:
@@ -55,7 +58,7 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
           APP_API_KEY: ${{ secrets.APP_API_KEY }}
-        run: gradle assembleRelease bundleRelease --stacktrace
+        run: gradle assembleRelease bundleRelease -Dorg.gradle.jvmargs="-Xmx4096m -Dfile.encoding=UTF-8 -Djava.awt.headless=true" --stacktrace
 
       - name: Upload Signed APK (For Testing on Phone)
         uses: actions/upload-artifact@v4
