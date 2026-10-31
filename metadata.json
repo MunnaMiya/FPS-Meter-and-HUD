@@ -1,0 +1,6 @@
+{
+  "name": "FPS Meter & HUD",
+  "description": "Real-time gaming FPS meter overlay with live CPU, GPU, temperature and RAM telemetry, Shizuku and root hardware hooks, and session performance graphing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
