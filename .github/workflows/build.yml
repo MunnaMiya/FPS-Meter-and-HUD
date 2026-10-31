@@ -58,7 +58,19 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
           APP_API_KEY: ${{ secrets.APP_API_KEY }}
-        run: gradle assembleRelease bundleRelease -Dorg.gradle.jvmargs="-Xmx4096m -Dfile.encoding=UTF-8 -Djava.awt.headless=true" --stacktrace
+        run: |
+          if [ -z "$KEYSTORE_PASSWORD" ]; then
+            echo "ERROR: KEYSTORE_PASSWORD secret is empty! Check Settings -> Secrets and variables -> Actions -> Repository secrets."
+            exit 1
+          fi
+          gradle assembleRelease bundleRelease \
+            --no-configuration-cache \
+            --no-build-cache \
+            -PKEYSTORE_PASSWORD="$KEYSTORE_PASSWORD" \
+            -PKEY_ALIAS="$KEY_ALIAS" \
+            -PKEY_PASSWORD="$KEY_PASSWORD" \
+            -Dorg.gradle.jvmargs="-Xmx4096m -Dfile.encoding=UTF-8 -Djava.awt.headless=true" \
+            --stacktrace
 
       - name: Upload Signed APK (For Testing on Phone)
         uses: actions/upload-artifact@v4
