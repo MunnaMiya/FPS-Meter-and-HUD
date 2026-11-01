@@ -35,7 +35,7 @@ class HardwareMonitor private constructor(context: Context) {
     private val monitorScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val mainHandler = Handler(Looper.getMainLooper())
 
-    private val privilegeManager = PrivilegeManager(appContext)
+    private val privilegeManager = PrivilegeManager.getInstance(appContext)
     private val activityManager = appContext.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
     private val powerManager = appContext.getSystemService(Context.POWER_SERVICE) as? PowerManager
     private val displayManager = appContext.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
@@ -178,7 +178,7 @@ class HardwareMonitor private constructor(context: Context) {
         } catch (_: Exception) {}
 
         monitorScope.launch {
-            _privilegeStatus.value = privilegeManager.checkPrivileges()
+            _privilegeStatus.value = privilegeManager.checkPrivileges(forceRecheck = false)
         }
 
         mainHandler.post {
@@ -199,7 +199,7 @@ class HardwareMonitor private constructor(context: Context) {
 
     fun refreshPrivileges() {
         monitorScope.launch {
-            _privilegeStatus.value = privilegeManager.checkPrivileges()
+            _privilegeStatus.value = privilegeManager.checkPrivileges(forceRecheck = true)
         }
     }
 
@@ -223,17 +223,15 @@ class HardwareMonitor private constructor(context: Context) {
 
         val cpuUsage = getCpuUsage()
         val tempC = getHardwareTemperature()
-        val gpuUsage = getGpuUsage()
+        var gpuUsage = getGpuUsage()
         val activePrivilege = _privilegeStatus.value.activeMode
 
-        var finalFps = calculatedFps
-        if (activePrivilege == "Root" || activePrivilege == "Shizuku") {
-            val sfFps = getSurfaceFlingerFps()
-            if (sfFps > 0f) {
-                finalFps = sfFps
-            }
+        // Only query GPU usage through the already-open persistent root session if non-root sysfs was unreadable
+        if (gpuUsage < 0f && activePrivilege == "Root") {
+            gpuUsage = getRootGpuUsageIfNeeded()
         }
 
+        var finalFps = calculatedFps
         if (finalFps <= 0f) {
             finalFps = targetHz.toFloat()
         }
@@ -350,33 +348,33 @@ class HardwareMonitor private constructor(context: Context) {
         return 37.5f
     }
 
-    private suspend fun getSurfaceFlingerFps(): Float {
-        val result = privilegeManager.executeCommand("dumpsys SurfaceFlinger --latency")
-        if (!result.isSuccess || result.output.isEmpty()) return -1f
+    @Volatile private var rootGpuSysfsSupported = true
 
-        val lines = result.output.lines()
-        if (lines.size < 5) return -1f
-
+    private suspend fun getRootGpuUsageIfNeeded(): Float {
+        if (!rootGpuSysfsSupported) return -1f
+        val result = privilegeManager.executeCommand(
+            "cat /sys/class/kgsl/kgsl-3d0/gpubusy 2>/dev/null || cat /sys/kernel/gpu/gpu_busy 2>/dev/null"
+        )
+        if (!result.isSuccess || result.output.isEmpty()) {
+            rootGpuSysfsSupported = false
+            return -1f
+        }
         try {
-            val periodNs = lines[0].trim().toLongOrNull() ?: return -1f
-            if (periodNs <= 0L) return -1f
-
-            var validFrames = 0
-            for (i in 1 until lines.size) {
-                val parts = lines[i].trim().split("\\s+".toRegex())
-                if (parts.size >= 3) {
-                    val actualPresent = parts[1].toLongOrNull() ?: continue
-                    if (actualPresent > 0L && actualPresent != Long.MAX_VALUE) {
-                        validFrames++
-                    }
+            val content = result.output.trim()
+            val spaceIdx = content.indexOf(' ')
+            if (spaceIdx > 0) {
+                val busy = content.substring(0, spaceIdx).trim().toLongOrNull() ?: 0L
+                val total = content.substring(spaceIdx + 1).trim().toLongOrNull() ?: 1L
+                if (total > 0L) {
+                    return ((busy.toFloat() / total.toFloat()) * 100f).coerceIn(0f, 100f)
                 }
             }
-            if (validFrames > 0) {
-                val estFps = (1_000_000_000.0 / periodNs).toFloat()
-                return estFps.coerceIn(30f, 240f)
+            val direct = content.toFloatOrNull()
+            if (direct != null) {
+                return direct.coerceIn(0f, 100f)
             }
         } catch (_: Exception) {}
-
+        rootGpuSysfsSupported = false
         return -1f
     }
 
