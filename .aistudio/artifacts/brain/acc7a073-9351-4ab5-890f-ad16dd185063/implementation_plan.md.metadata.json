@@ -1,0 +1,6 @@
+{
+  "summary":  "Implementation plan to resolve the Android 10 (API 29) 60Hz refresh-rate lock issue by reading actual SurfaceFlinger hardware page-flip and buffer-queue frame delivery deltas via the persistent root shell session, while preserving 100% of the existing Android 11–17 pipeline and providing an optional toggle in Overlay Settings.",
+  "updatedAt":  "2026-11-01T12:07:40.227068547Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}

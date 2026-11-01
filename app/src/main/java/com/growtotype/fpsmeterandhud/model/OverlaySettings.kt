@@ -1,5 +1,6 @@
 package com.growtotype.fpsmeterandhud.model
 
+import android.os.Build
 import androidx.compose.runtime.Immutable
 
 /**
@@ -20,5 +21,7 @@ data class OverlaySettings(
     val showSparkline: Boolean = true,
     val isCompactDefault: Boolean = false,
     val targetRefreshRate: Int = 0,        // 0 = Auto-detect display rate
-    val preferredPrivilege: String = "AUTO"
+    val preferredPrivilege: String = "AUTO",
+    // Automatically enabled on Android 10 (API 29) to bypass the 60Hz VSYNC lock; optional on Android 11-17
+    val useSurfaceFlingerFps: Boolean = (Build.VERSION.SDK_INT == Build.VERSION_CODES.Q)
 )

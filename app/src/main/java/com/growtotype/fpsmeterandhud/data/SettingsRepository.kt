@@ -2,6 +2,7 @@ package com.growtotype.fpsmeterandhud.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.os.Build
 import com.growtotype.fpsmeterandhud.model.OverlaySettings
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -15,6 +16,7 @@ class SettingsRepository(context: Context) {
     val settings: StateFlow<OverlaySettings> = _settings.asStateFlow()
 
     private fun loadSettings(): OverlaySettings {
+        val defaultSfFps = (Build.VERSION.SDK_INT == Build.VERSION_CODES.Q)
         return OverlaySettings(
             opacity = prefs.getFloat("opacity", 0.85f),
             scale = prefs.getFloat("scale", 1.0f),
@@ -28,7 +30,8 @@ class SettingsRepository(context: Context) {
             showSparkline = prefs.getBoolean("showSparkline", true),
             isCompactDefault = prefs.getBoolean("isCompactDefault", false),
             targetRefreshRate = prefs.getInt("targetRefreshRate", 0),
-            preferredPrivilege = prefs.getString("preferredPrivilege", "AUTO") ?: "AUTO"
+            preferredPrivilege = prefs.getString("preferredPrivilege", "AUTO") ?: "AUTO",
+            useSurfaceFlingerFps = prefs.getBoolean("useSurfaceFlingerFps", defaultSfFps)
         )
     }
 
@@ -47,6 +50,7 @@ class SettingsRepository(context: Context) {
             .putBoolean("isCompactDefault", newSettings.isCompactDefault)
             .putInt("targetRefreshRate", newSettings.targetRefreshRate)
             .putString("preferredPrivilege", newSettings.preferredPrivilege)
+            .putBoolean("useSurfaceFlingerFps", newSettings.useSurfaceFlingerFps)
             .apply()
 
         _settings.value = newSettings

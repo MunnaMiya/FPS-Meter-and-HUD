@@ -415,7 +415,48 @@ fun OverlaySettingsTab(
             }
         }
 
-        // 6. Control Center Quick Settings Tile Card
+        // 6. SurfaceFlinger Real Render FPS (Android 10 60Hz Lock Fix)
+        item {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .border(
+                        1.dp,
+                        if (settings.useSurfaceFlingerFps) AccentGreen else MaterialTheme.colorScheme.outline,
+                        RoundedCornerShape(18.dp)
+                    ),
+                shape = RoundedCornerShape(18.dp),
+                color = MaterialTheme.colorScheme.surface
+            ) {
+                Column(modifier = Modifier.padding(18.dp)) {
+                    Text(
+                        text = "Android 10 Render-Rate Engine",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Auto-enabled on Android 10 (API 29). Leave off on Android 11–17 unless needed.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = AccentGreen,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    SettingToggleRow(
+                        title = "SurfaceFlinger Real Render FPS",
+                        description = "Reads actual game buffer page-flips via persistent root shell instead of 60Hz screen VSYNC lock",
+                        checked = settings.useSurfaceFlingerFps,
+                        onCheckedChange = {
+                            viewModel.updateSettings(settings.copy(useSurfaceFlingerFps = it))
+                        }
+                    )
+                }
+            }
+        }
+
+        // 7. Control Center Quick Settings Tile Card
         item {
             Surface(
                 modifier = Modifier

@@ -12,6 +12,7 @@ import android.os.Looper
 import android.os.PowerManager
 import android.view.Choreographer
 import android.view.Display
+import com.growtotype.fpsmeterandhud.data.SettingsRepository
 import com.growtotype.fpsmeterandhud.model.HardwareSample
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -36,6 +37,7 @@ class HardwareMonitor private constructor(context: Context) {
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private val privilegeManager = PrivilegeManager.getInstance(appContext)
+    private val settingsRepository = SettingsRepository.getInstance(appContext)
     private val activityManager = appContext.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
     private val powerManager = appContext.getSystemService(Context.POWER_SERVICE) as? PowerManager
     private val displayManager = appContext.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
@@ -232,6 +234,14 @@ class HardwareMonitor private constructor(context: Context) {
         }
 
         var finalFps = calculatedFps
+        val useSfFps = settingsRepository.settings.value.useSurfaceFlingerFps
+        if (useSfFps && activePrivilege == "Root") {
+            val sfRenderFps = getRealRenderedSurfaceFlingerFps(targetHz)
+            if (sfRenderFps > 0f) {
+                finalFps = sfRenderFps
+            }
+        }
+
         if (finalFps <= 0f) {
             finalFps = targetHz.toFloat()
         }
@@ -375,6 +385,136 @@ class HardwareMonitor private constructor(context: Context) {
             }
         } catch (_: Exception) {}
         rootGpuSysfsSupported = false
+        return -1f
+    }
+
+    // State for SurfaceFlinger 1013 page-flip delta and layer timestamp tracking
+    private var prevSfFlipCount: Long = -1L
+    private var prevSfFlipTimeNs: Long = 0L
+    private var prevLayerMaxPresentNs: Long = 0L
+
+    /**
+     * Reads the actual rendered frame rate from SurfaceFlinger over the persistent root session.
+     * Used automatically on Android 10 (API 29) to bypass the fixed 60Hz VSYNC lock, or when
+     * manually enabled via Overlay Settings on any Android version.
+     */
+    private suspend fun getRealRenderedSurfaceFlingerFps(targetHz: Int): Float {
+        // 1. Try SurfaceFlinger hardware composer page-flip counter (service call SurfaceFlinger 1013)
+        //    Executes in <2ms inside the already-open persistent su pipe (zero new su processes/toasts).
+        val flipFps = querySurfaceFlingerPageFlipFps(targetHz)
+        if (flipFps > 0f) {
+            return flipFps
+        }
+
+        // 2. Fallback: Query active foreground game SurfaceView layer frame presentation timestamps
+        val layerFps = queryActiveLayerLatencyFps(targetHz)
+        if (layerFps > 0f) {
+            return layerFps
+        }
+
+        return -1f
+    }
+
+    private suspend fun querySurfaceFlingerPageFlipFps(targetHz: Int): Float {
+        val res = privilegeManager.executeCommand("service call SurfaceFlinger 1013")
+        if (!res.isSuccess || res.output.isEmpty()) return -1f
+
+        try {
+            // Typical output: Result: Parcel(00000000 000c4a12   '............')
+            val parcelIdx = res.output.indexOf("Parcel(")
+            if (parcelIdx >= 0) {
+                val inner = res.output.substring(parcelIdx + 7).substringBefore(")")
+                val hexTokens = inner.trim().split("\\s+".toRegex())
+                    .filter { it.matches(Regex("^[0-9a-fA-F]{8}$")) }
+
+                val flipHex = when {
+                    hexTokens.size >= 2 && hexTokens[0] == "00000000" -> hexTokens[1]
+                    hexTokens.isNotEmpty() -> hexTokens[0]
+                    else -> null
+                }
+
+                if (flipHex != null) {
+                    val currentFlips = flipHex.toLong(16)
+                    val nowNs = System.nanoTime()
+                    val prevFlips = prevSfFlipCount
+                    val prevTime = prevSfFlipTimeNs
+
+                    prevSfFlipCount = currentFlips
+                    prevSfFlipTimeNs = nowNs
+
+                    if (prevFlips >= 0L && currentFlips >= prevFlips && prevTime > 0L) {
+                        val deltaNs = nowNs - prevTime
+                        if (deltaNs in 250_000_000L..4_000_000_000L) {
+                            var deltaFlips = currentFlips - prevFlips
+                            // Subtract 1 flip/sec caused by our own HUD overlay text update when another app/game is rendering
+                            if (deltaFlips > 2L) {
+                                deltaFlips -= 1L
+                            }
+                            val rawFps = (deltaFlips * 1_000_000_000.0 / deltaNs.toDouble()).toFloat()
+                            if (rawFps >= 1f) {
+                                return rawFps.coerceIn(1f, (targetHz + 5).toFloat())
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        return -1f
+    }
+
+    private suspend fun queryActiveLayerLatencyFps(targetHz: Int): Float {
+        val listRes = privilegeManager.executeCommand("dumpsys SurfaceFlinger --list")
+        if (!listRes.isSuccess || listRes.output.isEmpty()) return -1f
+
+        val lines = listRes.output.lines()
+        val candidateLayer = lines.lastOrNull { line ->
+            val trimmed = line.trim()
+            trimmed.startsWith("SurfaceView") &&
+                !trimmed.contains("com.growtotype.fpsmeterandhud") &&
+                !trimmed.contains("StatusBar") &&
+                !trimmed.contains("NavigationBar") &&
+                !trimmed.contains("Wallpaper")
+        }?.trim() ?: return -1f
+
+        val escapedLayer = candidateLayer.replace("\"", "\\\"")
+        val latRes = privilegeManager.executeCommand("dumpsys SurfaceFlinger --latency \"$escapedLayer\"")
+        if (!latRes.isSuccess || latRes.output.isEmpty()) return -1f
+
+        try {
+            val latLines = latRes.output.lines()
+            if (latLines.size < 4) return -1f
+
+            // Skip line 0 (which is the static VSYNC periodNs) and collect actualPresentTimeNs (column 1)
+            val presentTimestamps = ArrayList<Long>(128)
+            for (i in 1 until latLines.size) {
+                val parts = latLines[i].trim().split("\\s+".toRegex())
+                if (parts.size >= 3) {
+                    val actualPresent = parts[1].toLongOrNull() ?: continue
+                    if (actualPresent > 0L && actualPresent < Long.MAX_VALUE / 2) {
+                        presentTimestamps.add(actualPresent)
+                    }
+                }
+            }
+
+            if (presentTimestamps.size >= 2) {
+                val latestNs = presentTimestamps.last()
+                if (latestNs <= prevLayerMaxPresentNs) {
+                    return -1f
+                }
+                prevLayerMaxPresentNs = latestNs
+
+                val windowStartNs = latestNs - 1_000_000_000L
+                val recentFrames = presentTimestamps.filter { it >= windowStartNs }
+                if (recentFrames.size >= 2) {
+                    val spanNs = recentFrames.last() - recentFrames.first()
+                    if (spanNs > 50_000_000L) {
+                        val fps = ((recentFrames.size - 1) * 1_000_000_000.0 / spanNs.toDouble()).toFloat()
+                        return fps.coerceIn(1f, (targetHz + 5).toFloat())
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+
         return -1f
     }
 
