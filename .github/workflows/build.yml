@@ -29,17 +29,17 @@ jobs:
             fi
           fi
 
-      - name: Accept Android SDK Licenses & Install API 37
+      - name: Accept Android SDK Licenses & Install API 36.1 / 37
         run: |
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
-          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-37" "build-tools;36.0.0" || true
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-36.1" "platforms;android-37" "build-tools;36.0.0" || true
 
       - name: Setup Gradle 9.3.1
         uses: gradle/actions/setup-gradle@v5
         with:
           gradle-version: '9.3.1'
 
-      - name: Decode Signing Keystore (With Fallback Paths)
+      - name: Decode Signing Keystore
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
         run: |
@@ -48,29 +48,38 @@ jobs:
             exit 1
           fi
           echo "$KEYSTORE_BASE64" | tr -d '[:space:]' | base64 --decode > app/release.keystore
-          cp app/release.keystore ./release.keystore
-          cp app/release.keystore ./my-upload-key.jks
-          cp app/release.keystore app/my-upload-key.jks
+          cp app/release.keystore my-upload-key.jks
 
-      - name: Build Signed Release APK & AAB (API 29 to 37)
+      - name: Configure Release Signing & Build Signed Release APK & AAB (API 29 to 37)
         env:
+          KEYSTORE_PATH: ${{ github.workspace }}/app/release.keystore
+          STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
           APP_API_KEY: ${{ secrets.APP_API_KEY }}
         run: |
-          if [ -z "$KEYSTORE_PASSWORD" ]; then
-            echo "ERROR: KEYSTORE_PASSWORD secret is empty! Check Settings -> Secrets and variables -> Actions -> Repository secrets."
-            exit 1
-          fi
-          gradle assembleRelease bundleRelease \
-            --no-configuration-cache \
-            --no-build-cache \
-            -PKEYSTORE_PASSWORD="$KEYSTORE_PASSWORD" \
-            -PKEY_ALIAS="$KEY_ALIAS" \
-            -PKEY_PASSWORD="$KEY_PASSWORD" \
-            -Dorg.gradle.jvmargs="-Xmx4096m -Dfile.encoding=UTF-8 -Djava.awt.headless=true" \
-            --stacktrace
+          python3 -c '
+          from pathlib import Path
+          p = Path("app/build.gradle.kts")
+          text = p.read_text()
+          old_block = """    create("release") {
+                val keystorePath = System.getenv("KEYSTORE_PATH") ?: "${rootDir}/my-upload-key.jks"
+                storeFile = file(keystorePath)
+                storePassword = System.getenv("STORE_PASSWORD")
+                keyAlias = "upload"
+                keyPassword = System.getenv("KEY_PASSWORD")
+              }"""
+          new_block = """    create("release") {
+                storeFile = file("release.keystore")
+                storePassword = System.getenv("KEYSTORE_PASSWORD") ?: project.findProperty("KEYSTORE_PASSWORD")?.toString()
+                keyAlias = System.getenv("KEY_ALIAS") ?: project.findProperty("KEY_ALIAS")?.toString()
+                keyPassword = System.getenv("KEY_PASSWORD") ?: project.findProperty("KEY_PASSWORD")?.toString()
+              }"""
+          if old_block in text:
+              p.write_text(text.replace(old_block, new_block, 1))
+          '
+          gradle assembleRelease bundleRelease --stacktrace
 
       - name: Upload Signed APK (For Testing on Phone)
         uses: actions/upload-artifact@v4
